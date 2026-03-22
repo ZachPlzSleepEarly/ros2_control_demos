@@ -56,7 +56,7 @@ def generate_launch_description():
     )
     robot_description = {"robot_description": robot_description_content}
 
-    robot_controllers = PathJoinSubstitution(
+    ros2_control_yaml_file = PathJoinSubstitution(
         [
             FindPackageShare("ros2_control_demo_example_11"),
             "config",
@@ -71,18 +71,27 @@ def generate_launch_description():
         ]
     )
 
-    control_node = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        parameters=[robot_controllers],
-        output="both",
-    )
-    robot_state_pub_bicycle_node = Node(
+    robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
         output="both",
         parameters=[robot_description],
     )
+
+    # 启动 controller manager + 拉起 joint_state_broadcaster
+    control_node = Node(
+        package="controller_manager",
+        executable="ros2_control_node",  # 执行后节点名称是 controller_manager
+        parameters=[ros2_control_yaml_file],  # 只会去看 yaml 文件的 controller_manager 块
+        output="both",
+    )
+    joint_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_state_broadcaster"],  # 去让Controller Manager 加载（拉起）之前登记的这一个Controller 的名字。
+    )
+
+    # Delay rviz start after `joint_state_broadcaster`
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
@@ -91,35 +100,6 @@ def generate_launch_description():
         arguments=["-d", rviz_config_file],
         condition=IfCondition(gui),
     )
-
-    joint_state_broadcaster_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["joint_state_broadcaster"],
-    )
-
-    # the steering controller libraries by default publish odometry on a separate topic than /tf
-    robot_bicycle_controller_spawner_remapped = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "bicycle_steering_controller",
-            "--param-file",
-            robot_controllers,
-            "--controller-ros-args",
-            "-r /bicycle_steering_controller/tf_odometry:=/tf",
-        ],
-        condition=IfCondition(remap_odometry_tf),
-    )
-
-    robot_bicycle_controller_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["bicycle_steering_controller", "--param-file", robot_controllers],
-        condition=UnlessCondition(remap_odometry_tf),
-    )
-
-    # Delay rviz start after `joint_state_broadcaster`
     delay_rviz_after_joint_state_broadcaster_spawner = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=joint_state_broadcaster_spawner,
@@ -128,6 +108,26 @@ def generate_launch_description():
     )
 
     # Delay start of robot_controller after `joint_state_broadcaster`
+    # the steering controller libraries by default publish odometry on a separate topic than /tf
+    robot_bicycle_controller_spawner_remapped = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "bicycle_steering_controller",  # controller_names (要操作的controller)
+            "--param-file", ros2_control_yaml_file,  # --param-file (给这个 controller 加载参数文件)
+            "--controller-ros-args", "-r /bicycle_steering_controller/tf_odometry:=/tf",  # 在 spawner 启动 controller 时，把一串 ROS CLI 参数原样传给这个 controller 节点
+        ],
+        condition=IfCondition(remap_odometry_tf),
+    )
+    robot_bicycle_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "bicycle_steering_controller",
+            "--param-file", ros2_control_yaml_file
+        ],
+        condition=UnlessCondition(remap_odometry_tf),
+    )
     delay_robot_controller_spawner_after_joint_state_broadcaster_spawner = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=joint_state_broadcaster_spawner,
@@ -136,10 +136,13 @@ def generate_launch_description():
     )
 
     nodes = [
+        robot_state_publisher,
+
         control_node,
-        robot_state_pub_bicycle_node,
         joint_state_broadcaster_spawner,
+
         delay_rviz_after_joint_state_broadcaster_spawner,
+
         delay_robot_controller_spawner_after_joint_state_broadcaster_spawner,
     ]
 
